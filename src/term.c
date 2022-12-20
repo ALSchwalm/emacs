@@ -115,6 +115,32 @@ enum no_color_bit
   NC_PROTECT		 = 1 << 7
 };
 
+
+enum tty_underline_type
+{
+  TTY_NO_UNDERLINE = 0,
+  TTY_UNDER_LINE,
+  TTY_DOUBLE_UNDER_LINE,
+  TTY_CURLY_UNDER_LINE,
+  TTY_DOTTED_UNDER_LINE,
+  TTY_DASHED_UNDER_LINE
+};
+
+static int tty_map_underline_style (enum face_underline_type underline)
+{
+  switch (underline)
+    {
+    case FACE_NO_UNDERLINE:
+      return TTY_NO_UNDERLINE;
+    case FACE_UNDER_LINE:
+      return TTY_UNDER_LINE;
+    case FACE_UNDER_WAVE:
+      return TTY_CURLY_UNDER_LINE;
+    default:
+      return TTY_UNDER_LINE;
+    }
+}
+
 /* internal state */
 
 /* The largest frame width in any call to calculate_costs.  */
@@ -1923,6 +1949,7 @@ turn_on_face (struct frame *f, int face_id)
   struct face *face = FACE_FROM_ID (f, face_id);
   unsigned long fg = face->foreground;
   unsigned long bg = face->background;
+  unsigned long uc = face->underline_color;
   struct tty_display_info *tty = FRAME_TTY (f);
 
   /* Use reverse video if the face specifies that.
@@ -1949,7 +1976,24 @@ turn_on_face (struct frame *f, int face_id)
     }
 
   if (face->tty_underline_p && MAY_USE_WITH_COLORS_P (tty, NC_UNDERLINE))
-    OUTPUT1_IF (tty, tty->TS_enter_underline_mode);
+    {
+      OUTPUT1_IF (tty, tty->TS_enter_underline_mode);
+
+      if (face_tty_specified_color (uc) && tty->TS_set_underline_color)
+	{
+	  char *p = tparam (tty->TS_set_underline_color, NULL, 0, uc, 0, 0, 0);
+	  OUTPUT (tty, p);
+	  xfree (p);
+	}
+
+      if (face->underline != FACE_UNDER_LINE && tty->TS_set_underline_style)
+	{
+	  char *p = tparam (tty->TS_set_underline_style, NULL, 0,
+			    tty_map_underline_style (face->underline), 0, 0, 0);
+	  OUTPUT (tty, p);
+	  xfree (p);
+	}
+    }
 
   if (face->tty_strike_through_p
       && MAY_USE_WITH_COLORS_P (tty, NC_STRIKE_THROUGH))
@@ -1986,6 +2030,7 @@ turn_off_face (struct frame *f, int face_id)
 {
   struct face *face = FACE_FROM_ID (f, face_id);
   struct tty_display_info *tty = FRAME_TTY (f);
+  unsigned long uc = face->underline_color;
 
   if (tty->TS_exit_attribute_mode)
     {
@@ -2008,7 +2053,20 @@ turn_off_face (struct frame *f, int face_id)
       /* If we don't have "me" we can only have those appearances
 	 that have exit sequences defined.  */
       if (face->tty_underline_p)
-	OUTPUT_IF (tty, tty->TS_exit_underline_mode);
+	{
+	 OUTPUT_IF (tty, tty->TS_exit_underline_mode);
+
+	 if (face_tty_specified_color (uc))
+	   OUTPUT_IF (tty, tty->TS_reset_underline_color);
+
+	 if (face->underline != FACE_UNDER_LINE && tty->TS_set_underline_style)
+	   {
+	     char *p = tparam (tty->TS_set_underline_style, NULL, 0,
+			       tty_map_underline_style (face->underline), 0, 0, 0);
+	     OUTPUT (tty, p);
+	     xfree (p);
+	   }
+	}
     }
 
   /* Switch back to default colors.  */
@@ -4156,6 +4214,31 @@ use the Bourne shell command 'TERM=...; export TERM' (C-shell:\n\
 
   tty->TS_enter_underline_mode = tgetstr ("us", address);
   tty->TS_exit_underline_mode = tgetstr ("ue", address);
+#ifdef TERMINFO
+  {
+    /* Underline color and style support. These are unofficial
+       identifiers, which are used here due to as a de-facto standard
+       introduced by tmux. */
+    tty->TS_set_underline_style = tigetstr ("Smulx");
+    tty->TS_set_underline_color = tigetstr ("Setulc");
+    tty->TS_reset_underline_color = tigetstr ("ol");
+
+    if (tty->TS_set_underline_style == (char *) (intptr_t) -1)
+      tty->TS_set_underline_style = NULL;
+
+    /* If either color or reset is not available, disable underline
+       coloring. */
+    if (tty->TS_reset_underline_color == NULL ||
+	tty->TS_reset_underline_color == (char *) (intptr_t) -1 ||
+	tty->TS_set_underline_color == NULL ||
+	tty->TS_set_underline_color == (char *) (intptr_t) -1)
+      {
+	tty->TS_set_underline_color = NULL;
+	tty->TS_reset_underline_color = NULL;
+      }
+  }
+#endif
+
   tty->TS_enter_bold_mode = tgetstr ("md", address);
   tty->TS_enter_italic_mode = tgetstr ("ZH", address);
   tty->TS_enter_dim_mode = tgetstr ("mh", address);

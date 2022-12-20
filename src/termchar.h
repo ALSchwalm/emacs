@@ -143,6 +143,9 @@ struct tty_display_info
   const char *TS_enter_underline_mode; /* "ue" -- end underlining.  */
   const char *TS_enter_strike_through_mode; /* "smxx" -- turn on strike-through
 					       mode.  */
+  const char* TS_set_underline_style; /* "Smulx" */
+  const char* TS_set_underline_color; /* "Setulc" */
+  const char* TS_reset_underline_color; /* "ol" */
 
   /* "as"/"ae" -- start/end alternate character set.  Not really
      supported, yet.  */

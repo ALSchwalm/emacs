@@ -373,6 +373,10 @@ static struct face *realize_gui_face (struct face_cache *,
 				      Lisp_Object [LFACE_VECTOR_SIZE]);
 static struct face *realize_tty_face (struct face_cache *,
 				      Lisp_Object [LFACE_VECTOR_SIZE]);
+static void realize_underline_attrs (struct face* face,
+				     struct face_cache *cache,
+				     Lisp_Object attrs[LFACE_VECTOR_SIZE],
+				     bool tty);
 static bool realize_basic_faces (struct frame *);
 static bool realize_default_face (struct frame *);
 static void realize_named_face (struct frame *, Lisp_Object, int);
@@ -383,6 +387,9 @@ static bool merge_face_ref (struct window *w,
                             bool, struct named_merge_point *,
                             enum lface_attribute_index);
 static int color_distance (Emacs_Color *x, Emacs_Color *y);
+static unsigned long map_tty_color (struct frame *f, struct face *face,
+				    enum lface_attribute_index idx, bool *defaulted,
+				    Lisp_Object color);
 
 #ifdef HAVE_WINDOW_SYSTEM
 static void set_font_frame_param (Lisp_Object, Lisp_Object);
@@ -6032,6 +6039,111 @@ font_maybe_unset_attribute (Lisp_Object font_object,
     }
 }
 
+void
+realize_underline_attrs (struct face* face,
+			 struct face_cache *cache,
+			 Lisp_Object attrs[LFACE_VECTOR_SIZE],
+			 bool tty)
+{
+  struct frame *f = cache->f;
+  unsigned long default_color = tty ? FACE_TTY_DEFAULT_COLOR : 0;
+  Lisp_Object underline = attrs[LFACE_UNDERLINE_INDEX];
+  bool defaulted = false;
+  if (EQ (underline, Qt))
+    {
+      /* Use default color (same as foreground color).  */
+      face->underline = FACE_UNDER_LINE;
+      face->underline_defaulted_p = true;
+      face->underline_color = default_color;
+      face->underline_at_descent_line_p = false;
+      face->underline_pixels_above_descent_line = 0;
+    }
+  else if (STRINGP (underline))
+    {
+      /* Use specified color.  */
+      face->underline = FACE_UNDER_LINE;
+
+      if (tty)
+	face->underline_color = map_tty_color (f, face, LFACE_UNDERLINE_INDEX,
+					       &defaulted,
+					       face->lface[LFACE_UNDERLINE_INDEX]);
+      else
+	face->underline_color
+	  = load_color (f, face, underline,
+			LFACE_UNDERLINE_INDEX);
+      face->underline_defaulted_p = defaulted;
+      face->underline_at_descent_line_p = false;
+      face->underline_pixels_above_descent_line = 0;
+    }
+  else if (NILP (underline))
+    {
+      face->underline = FACE_NO_UNDERLINE;
+      face->underline_defaulted_p = false;
+      face->underline_color = default_color;
+      face->underline_at_descent_line_p = false;
+      face->underline_pixels_above_descent_line = 0;
+    }
+  else if (CONSP (underline))
+    {
+      /* `(:color COLOR :style STYLE)'.
+         STYLE being one of `line' or `wave'. */
+      face->underline = FACE_UNDER_LINE;
+      face->underline_color = default_color;
+      face->underline_defaulted_p = true;
+      face->underline_at_descent_line_p = false;
+      face->underline_pixels_above_descent_line = 0;
+
+      /* FIXME?  This is also not robust about checking the precise form.
+         See comments in Finternal_set_lisp_face_attribute.  */
+      while (CONSP (underline))
+        {
+          Lisp_Object keyword, value;
+
+          keyword = XCAR (underline);
+          underline = XCDR (underline);
+
+          if (!CONSP (underline))
+            break;
+          value = XCAR (underline);
+          underline = XCDR (underline);
+
+          if (EQ (keyword, QCcolor))
+            {
+              if (EQ (value, Qforeground_color))
+                {
+                  face->underline_defaulted_p = true;
+                  face->underline_color = default_color;
+                }
+              else if (STRINGP (value))
+                {
+		  if (tty)
+		    face->underline_color = map_tty_color (f, face, LFACE_UNDERLINE_INDEX,
+							   &defaulted,
+							   value);
+		  else
+		    face->underline_color = load_color (f, face, value,
+							LFACE_UNDERLINE_INDEX);
+                  face->underline_defaulted_p = defaulted;
+                }
+            }
+          else if (EQ (keyword, QCstyle))
+            {
+              if (EQ (value, Qline))
+                face->underline = FACE_UNDER_LINE;
+              else if (EQ (value, Qwave))
+                face->underline = FACE_UNDER_WAVE;
+            }
+	  else if (EQ (keyword, QCposition) && !tty)
+	    {
+	      face->underline_at_descent_line_p = !NILP (value);
+
+	      if (FIXNATP (value))
+		face->underline_pixels_above_descent_line = XFIXNAT (value);
+	    }
+        }
+    }
+}
+
 /* Realize the fully-specified face with attributes ATTRS in face
    cache CACHE for ASCII characters.  Do it for GUI frame CACHE->f.
    If the new face doesn't share font with the default face, a
@@ -6046,7 +6158,7 @@ realize_gui_face (struct face_cache *cache, Lisp_Object attrs[LFACE_VECTOR_SIZE]
 #ifdef HAVE_WINDOW_SYSTEM
   struct face *default_face;
   struct frame *f;
-  Lisp_Object stipple, underline, overline, strike_through, box;
+  Lisp_Object stipple, overline, strike_through, box;
 
   eassert (FRAME_WINDOW_P (cache->f));
 
@@ -6244,90 +6356,7 @@ realize_gui_face (struct face_cache *cache, Lisp_Object attrs[LFACE_VECTOR_SIZE]
     }
 
   /* Text underline, overline, strike-through.  */
-
-  underline = attrs[LFACE_UNDERLINE_INDEX];
-  if (EQ (underline, Qt))
-    {
-      /* Use default color (same as foreground color).  */
-      face->underline = FACE_UNDER_LINE;
-      face->underline_defaulted_p = true;
-      face->underline_color = 0;
-      face->underline_at_descent_line_p = false;
-      face->underline_pixels_above_descent_line = 0;
-    }
-  else if (STRINGP (underline))
-    {
-      /* Use specified color.  */
-      face->underline = FACE_UNDER_LINE;
-      face->underline_defaulted_p = false;
-      face->underline_color
-	= load_color (f, face, underline,
-		      LFACE_UNDERLINE_INDEX);
-      face->underline_at_descent_line_p = false;
-      face->underline_pixels_above_descent_line = 0;
-    }
-  else if (NILP (underline))
-    {
-      face->underline = FACE_NO_UNDERLINE;
-      face->underline_defaulted_p = false;
-      face->underline_color = 0;
-      face->underline_at_descent_line_p = false;
-      face->underline_pixels_above_descent_line = 0;
-    }
-  else if (CONSP (underline))
-    {
-      /* `(:color COLOR :style STYLE)'.
-         STYLE being one of `line' or `wave'. */
-      face->underline = FACE_UNDER_LINE;
-      face->underline_color = 0;
-      face->underline_defaulted_p = true;
-      face->underline_at_descent_line_p = false;
-      face->underline_pixels_above_descent_line = 0;
-
-      /* FIXME?  This is also not robust about checking the precise form.
-         See comments in Finternal_set_lisp_face_attribute.  */
-      while (CONSP (underline))
-        {
-          Lisp_Object keyword, value;
-
-          keyword = XCAR (underline);
-          underline = XCDR (underline);
-
-          if (!CONSP (underline))
-            break;
-          value = XCAR (underline);
-          underline = XCDR (underline);
-
-          if (EQ (keyword, QCcolor))
-            {
-              if (EQ (value, Qforeground_color))
-                {
-                  face->underline_defaulted_p = true;
-                  face->underline_color = 0;
-                }
-              else if (STRINGP (value))
-                {
-                  face->underline_defaulted_p = false;
-                  face->underline_color = load_color (f, face, value,
-                                                      LFACE_UNDERLINE_INDEX);
-                }
-            }
-          else if (EQ (keyword, QCstyle))
-            {
-              if (EQ (value, Qline))
-                face->underline = FACE_UNDER_LINE;
-              else if (EQ (value, Qwave))
-                face->underline = FACE_UNDER_WAVE;
-            }
-	  else if (EQ (keyword, QCposition))
-	    {
-	      face->underline_at_descent_line_p = !NILP (value);
-
-	      if (FIXNATP (value))
-		face->underline_pixels_above_descent_line = XFIXNAT (value);
-	    }
-        }
-    }
+  realize_underline_attrs(face, cache, attrs, false);
 
   overline = attrs[LFACE_OVERLINE_INDEX];
   if (STRINGP (overline))
@@ -6373,24 +6402,26 @@ realize_gui_face (struct face_cache *cache, Lisp_Object attrs[LFACE_VECTOR_SIZE]
    specifies which color to map.  Set *DEFAULTED to true if mapping to the
    default foreground/background colors.  */
 
-static void
+static unsigned long
 map_tty_color (struct frame *f, struct face *face,
-	       enum lface_attribute_index idx, bool *defaulted)
+	       enum lface_attribute_index idx, bool *defaulted,
+	       Lisp_Object color)
 {
-  Lisp_Object frame, color, def;
-  bool foreground_p = idx == LFACE_FOREGROUND_INDEX;
+  Lisp_Object frame, def;
+  bool foreground_p = idx != LFACE_BACKGROUND_INDEX;
   unsigned long default_pixel =
     foreground_p ? FACE_TTY_DEFAULT_FG_COLOR : FACE_TTY_DEFAULT_BG_COLOR;
   unsigned long pixel = default_pixel;
 #ifdef MSDOS
   unsigned long default_other_pixel =
-    foreground_p ? FACE_TTY_DEFAULT_BG_COLOR : FACE_TTY_DEFAULT_FG_COLOR;
+    foreground_p ? FACE_TTY_DEFAULT_BG_COLOR : ;
 #endif
 
-  eassert (idx == LFACE_FOREGROUND_INDEX || idx == LFACE_BACKGROUND_INDEX);
+  eassert (idx == LFACE_FOREGROUND_INDEX ||
+	   idx == LFACE_BACKGROUND_INDEX ||
+	   idx == LFACE_UNDERLINE_INDEX);
 
   XSETFRAME (frame, f);
-  color = face->lface[idx];
 
   if (STRINGP (color)
       && SCHARS (color)
@@ -6419,7 +6450,7 @@ map_tty_color (struct frame *f, struct face *face,
 		pixel = FRAME_FOREGROUND_PIXEL (f);
 	      else
 		pixel = FRAME_BACKGROUND_PIXEL (f);
-	      face->lface[idx] = tty_color_name (f, pixel);
+	      XSETSTRING (color, tty_color_name (f, pixel));
 	      *defaulted = true;
 	    }
 	  else if (pixel == default_other_pixel)
@@ -6428,19 +6459,15 @@ map_tty_color (struct frame *f, struct face *face,
 		pixel = FRAME_BACKGROUND_PIXEL (f);
 	      else
 		pixel = FRAME_FOREGROUND_PIXEL (f);
-	      face->lface[idx] = tty_color_name (f, pixel);
+	      XSETSTRING (color, tty_color_name (f, pixel));
 	      *defaulted = true;
 	    }
 	}
 #endif /* MSDOS */
     }
 
-  if (foreground_p)
-    face->foreground = pixel;
-  else
-    face->background = pixel;
+  return pixel;
 }
-
 
 /* Realize the fully-specified face with attributes ATTRS in face
    cache CACHE for ASCII characters.  Do it for TTY frame CACHE->f.
@@ -6478,9 +6505,15 @@ realize_tty_face (struct face_cache *cache,
   if (!NILP (attrs[LFACE_STRIKE_THROUGH_INDEX]))
     face->tty_strike_through_p = true;
 
+  realize_underline_attrs(face, cache, attrs, true);
+
   /* Map color names to color indices.  */
-  map_tty_color (f, face, LFACE_FOREGROUND_INDEX, &face_colors_defaulted);
-  map_tty_color (f, face, LFACE_BACKGROUND_INDEX, &face_colors_defaulted);
+  face->foreground = map_tty_color (f, face, LFACE_FOREGROUND_INDEX,
+				    &face_colors_defaulted,
+				    face->lface[LFACE_FOREGROUND_INDEX]);
+  face->background = map_tty_color (f, face, LFACE_BACKGROUND_INDEX,
+				    &face_colors_defaulted,
+				    face->lface[LFACE_BACKGROUND_INDEX]);
 
   /* Swap colors if face is inverse-video.  If the colors are taken
      from the frame colors, they are already inverted, since the
