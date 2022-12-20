@@ -115,6 +115,10 @@ enum no_color_bit
   NC_PROTECT		 = 1 << 7
 };
 
+static bool term_is_24bit (struct tty_display_info *tty)
+{
+  return tty->TN_max_colors == 16777216;
+}
 
 enum tty_underline_type
 {
@@ -2278,6 +2282,56 @@ TERMINAL is not on a tty device.  */)
   struct terminal *t = decode_tty_terminal (terminal);
 
   return (t && !strcmp (t->display_info.tty->name, DEV_TTY) ? Qt : Qnil);
+}
+
+DEFUN ("tty-allow-underline-color", Ftty_allow_underline_color,
+       Stty_allow_underline_color, 0, 1, 0,
+       doc: /* Declare that the tty used by TERMINAL supports underline colors.
+This is used to override the terminfo data, for certain terminals that
+support underline with colors that differ from the foreground or background
+colors, but do not specify that support in a standard way.  This function has
+no effect if used on a non-tty terminal.
+
+TERMINAL can be a terminal object, a frame or nil (meaning the
+selected frame's terminal).  This function always returns nil if
+TERMINAL does not refer to a text terminal.  */)
+  (Lisp_Object terminal)
+{
+  struct terminal *t = decode_live_terminal (terminal);
+
+  if (t->type == output_termcap)
+    {
+      if (!t->display_info.tty->TS_set_underline_color)
+	{
+	  if (term_is_24bit (t->display_info.tty))
+	    t->display_info.tty->TS_set_underline_color = "\033[58:2::%p1%{65536}%/%d:%p1%{256}%/%{255}%&%d:%p1%{255}%&%d%;m";
+	  else
+	    t->display_info.tty->TS_set_underline_color = "\033[58:5:%dm";
+	}
+
+      if (!t->display_info.tty->TS_set_underline_color)
+	t->display_info.tty->TS_reset_underline_color = "\033[59m";
+    }
+  return Qnil;
+}
+
+DEFUN ("tty-allow-underline-style", Ftty_allow_underline_style,
+       Stty_allow_underline_style, 0, 1, 0,
+       doc: /* Declare that the tty used by TERMINAL supports underline styles.
+This is used to override the terminfo data, for certain terminals that
+support underline styles such as 'waves', but do not specify that support
+in a standard way.  This function has no effect if used on a non-tty terminal.
+
+TERMINAL can be a terminal object, a frame or nil (meaning the
+selected frame's terminal).  This function always returns nil if
+TERMINAL does not refer to a text terminal.  */)
+  (Lisp_Object terminal)
+{
+  struct terminal *t = decode_live_terminal (terminal);
+
+  if (t->type == output_termcap && !t->display_info.tty->TS_set_underline_style)
+    t->display_info.tty->TS_set_underline_style = "\033[4:%p1%dm";
+  return Qnil;
 }
 
 DEFUN ("tty-no-underline", Ftty_no_underline, Stty_no_underline, 0, 1, 0,
@@ -4671,6 +4725,8 @@ trigger redisplay.  */);
 
   defsubr (&Stty_display_color_p);
   defsubr (&Stty_display_color_cells);
+  defsubr (&Stty_allow_underline_color);
+  defsubr (&Stty_allow_underline_style);
   defsubr (&Stty_no_underline);
   defsubr (&Stty_type);
   defsubr (&Scontrolling_tty_p);
